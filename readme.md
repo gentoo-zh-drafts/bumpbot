@@ -1,6 +1,10 @@
 gentoo-zh overlay bumpbot ，也可用于其他 overlay（大概）
 
+使用方法:
+
+```
 GITHUB_TOKEN="ghp_xxxx" ./bumpbot -f overlay.toml
+```
 
 版本信息来自 `nvcmp --file overlay.toml --json --newer` 
 
