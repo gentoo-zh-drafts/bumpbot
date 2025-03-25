@@ -120,26 +120,28 @@ func main() {
 	titlePrefix := "[nvchecker] " + name + " can be bump to "
 	title := titlePrefix + newver
 
-	query := fmt.Sprintf("repo:%s is:issue in:title %s", repoName, title)
+	query := fmt.Sprintf("repo:%s is:issue in:title %s", repoName, titlePrefix)
 	emptyIssue := Issue{}
 	currentIssue := searchIssueByTitle(client, githubv4.String(query))
 
-	if currentIssue == emptyIssue {
-		// create new issue
-		createissue(client,
-			repoName,
-			githubv4.String(title),
-			body,
-			nvcheckerLabelId)
-	} else {
-		// Update the existing issue
-		if currentIssue.Title == githubv4.String(title) {
-			// check body
-			if currentIssue.Body != githubv4.String(body) {
-				// update body
-				updateIssueBody(client, currentIssue, body, nvcheckerLabelId)
+	if currentIssue != emptyIssue {
+		if currentIssue.Body == githubv4.String(body) && currentIssue.Title == githubv4.String(title) {
+			// If body and title match, do nothing
+			return
+		} else {
+			// If body or title do not match
+			if currentIssue.State == githubv4.IssueStateOpen {
+				// If the issue is open, update it
+				updateIssue(client, currentIssue, title, body, nvcheckerLabelId)
+				return
+			} else {
+				// If the issue is closed, create a new one
+				createissue(client, repoName, title, body, nvcheckerLabelId)
 			}
 		}
+	} else {
+		// If no matching issue is found, create a new one
+		createissue(client, repoName, title, body, nvcheckerLabelId)
 	}
 }
 func getRepositoryID(client *githubv4.Client, repoName string) githubv4.String {
@@ -230,7 +232,7 @@ func searchIssueByTitle(client *githubv4.Client, query githubv4.String) Issue {
 	return emptyIssue
 }
 
-func createissue(client *githubv4.Client, repoName string, title githubv4.String, body string, labelId githubv4.ID) {
+func createissue(client *githubv4.Client, repoName string, title string, body string, labelId githubv4.ID) {
 	var m struct {
 		CreateIssue struct {
 			Issue struct {
@@ -241,7 +243,7 @@ func createissue(client *githubv4.Client, repoName string, title githubv4.String
 
 	input := githubv4.CreateIssueInput{
 		RepositoryID: getRepositoryID(client, repoName),
-		Title:        title,
+		Title:        githubv4.String(title),
 		Body:         githubv4.NewString(githubv4.String(body)),
 		LabelIDs:     &[]githubv4.ID{labelId},
 	}
@@ -254,7 +256,7 @@ func createissue(client *githubv4.Client, repoName string, title githubv4.String
 	fmt.Printf("Created issue: %s\n", m.CreateIssue.Issue.Url)
 }
 
-func updateIssueBody(client *githubv4.Client, issue Issue, body string, labelId githubv4.ID) {
+func updateIssue(client *githubv4.Client, issue Issue, title string, body string, labelId githubv4.ID) {
 	var m struct {
 		UpdateIssue struct {
 			Issue struct {
@@ -265,6 +267,7 @@ func updateIssueBody(client *githubv4.Client, issue Issue, body string, labelId 
 
 	input := githubv4.UpdateIssueInput{
 		ID:       issue.Id,
+		Title:    githubv4.NewString(githubv4.String(title)),
 		Body:     githubv4.NewString(githubv4.String(body)),
 		LabelIDs: &[]githubv4.ID{labelId},
 	}
