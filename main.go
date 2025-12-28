@@ -194,6 +194,28 @@ func getLabelIdbyname(client *githubv4.Client, repoName string, labelName github
 		log.Fatalf("Failed to fetch labels: %v", err)
 	}
 
+	if len(q.Repository.Labels.Nodes) == 0 {
+		log.Printf("label %s not found in repository %s, creating ...", labelName, repoName)
+		var m struct {
+			CreateLabel struct {
+				Label struct {
+					Id githubv4.String
+				}
+			} `graphql:"createLabel(input: $input)"`
+		}
+		input := githubv4.CreateLabelInput{
+			RepositoryID: getRepositoryID(client, repoName),
+			Name:         labelName,
+			Color:        githubv4.String("5319e7"), // purple
+			Description:  githubv4.NewString(githubv4.String("Labels created by bumpbot using nvchecker")),
+		}
+		err := client.Mutate(context.Background(), &m, input, nil)
+		if err != nil {
+			log.Fatalf("Failed to create label: %v", err)
+		}
+		return m.CreateLabel.Label.Id
+	}
+
 	for _, node := range q.Repository.Labels.Nodes {
 		if node.Name == labelName {
 			return node.Id
