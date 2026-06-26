@@ -122,7 +122,7 @@ func main() {
 
 	query := fmt.Sprintf("repo:%s is:issue in:title %s", repoName, titlePrefix)
 	emptyIssue := Issue{}
-	currentIssue := searchIssueByTitle(client, githubv4.String(query))
+	currentIssue := searchIssueByTitle(client, githubv4.String(query), titlePrefix)
 
 	if currentIssue != emptyIssue {
 		if currentIssue.Body == githubv4.String(body) && currentIssue.Title == githubv4.String(title) {
@@ -224,7 +224,7 @@ func getLabelIdbyname(client *githubv4.Client, repoName string, labelName github
 	return ""
 }
 
-func searchIssueByTitle(client *githubv4.Client, query githubv4.String) Issue {
+func searchIssueByTitle(client *githubv4.Client, query githubv4.String, titlePrefix string) Issue {
 
 	emptyIssue := Issue{}
 	var q struct {
@@ -232,7 +232,7 @@ func searchIssueByTitle(client *githubv4.Client, query githubv4.String) Issue {
 			Nodes []struct {
 				Issue `graphql:"... on Issue"`
 			}
-		} `graphql:"search(query: $query, type: ISSUE, first: 1)"`
+		} `graphql:"search(query: $query, type: ISSUE, first: 100)"`
 	}
 
 	err := client.Query(
@@ -246,11 +246,26 @@ func searchIssueByTitle(client *githubv4.Client, query githubv4.String) Issue {
 		return emptyIssue
 	}
 
-	if len(q.Search.Nodes) == 1 {
-		for _, node := range q.Search.Nodes {
+	// GitHub search tokenizes package names, so cc-switch can match cc-switch-cli.
+	var closedIssue Issue
+	for _, node := range q.Search.Nodes {
+		if !strings.HasPrefix(string(node.Issue.Title), titlePrefix) {
+			continue
+		}
+
+		if node.Issue.State == githubv4.IssueStateOpen {
 			return node.Issue
 		}
+
+		if closedIssue == emptyIssue {
+			closedIssue = node.Issue
+		}
 	}
+
+	if closedIssue != emptyIssue {
+		return closedIssue
+	}
+
 	return emptyIssue
 }
 
