@@ -65,7 +65,7 @@ func main() {
 		body += "oldver: " + oldver
 	}
 
-	gentooZhOfficialRepoName := "Gentoo-zh/gentoo-zh"
+	gentooZhOfficialRepoName := "Gentoo-zh/overlay"
 	repoName := os.Getenv("GITHUB_REPOSITORY")
 
 	if len(repoName) == 0 {
