@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/pelletier/go-toml"
@@ -44,20 +45,82 @@ func readGithubAccount(tomlPath string, packagename string) interface{} {
 	}
 }
 
+// loadRevdeps parses the deps-table relation.md and returns, for each package,
+// the packages that depend on it. relation.md is an indented dependency tree of
+// cat/pkg atoms: a row nested under another means the outer package depends on
+// the inner one, so each parent->child edge is recorded as a reverse dep.
+func loadRevdeps(path string) map[string][]string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		log.Printf("relation file %s unreadable (%v); skipping dependency hint", path, err)
+		return nil
+	}
+	// pkgOf returns the cat/pkg atom on a table row and its indentation depth
+	// (leading spaces before the atom); "" if the row is not a package row.
+	pkgOf := func(line string) (string, int) {
+		i := strings.Index(line, "|")
+		if i < 0 {
+			return "", 0
+		}
+		raw := line[:i]
+		s := strings.TrimSpace(raw)
+		if !strings.Contains(s, "/") || strings.ContainsAny(s, " \t") {
+			return "", 0
+		}
+		return s, len(raw) - len(strings.TrimLeft(raw, " "))
+	}
+	type frame struct {
+		pkg    string
+		indent int
+	}
+	rev := map[string]map[string]bool{}
+	// The table is an indented dependency tree: a row's parent (the package that
+	// depends on it) is the nearest preceding row with a smaller indent. Track a
+	// stack of open ancestors and record parent -> child as child's reverse dep.
+	var stack []frame
+	for _, line := range strings.Split(string(data), "\n") {
+		pkg, indent := pkgOf(line)
+		if pkg == "" {
+			continue
+		}
+		for len(stack) > 0 && stack[len(stack)-1].indent >= indent {
+			stack = stack[:len(stack)-1]
+		}
+		if len(stack) > 0 && stack[len(stack)-1].pkg != pkg {
+			parent := stack[len(stack)-1].pkg
+			if rev[pkg] == nil {
+				rev[pkg] = map[string]bool{}
+			}
+			rev[pkg][parent] = true
+		}
+		stack = append(stack, frame{pkg, indent})
+	}
+	out := map[string][]string{}
+	for d, m := range rev {
+		for t := range m {
+			out[d] = append(out[d], t)
+		}
+		sort.Strings(out[d])
+	}
+	return out
+}
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
 	var (
-		name     string
-		newver   string
-		oldver   string
-		tomlFile string
+		name         string
+		newver       string
+		oldver       string
+		tomlFile     string
+		relationFile string
 	)
 
 	flag.StringVar(&name, "name", "", "包名")
 	flag.StringVar(&newver, "newver", "", "新版本号")
 	flag.StringVar(&oldver, "oldver", "", "旧版本号")
 	flag.StringVar(&tomlFile, "file", "", "旧版本号")
+	flag.StringVar(&relationFile, "relation", "", "path to deps-table relation.md for reverse-dependency hints")
 	flag.Parse()
 
 	body := ""
@@ -73,6 +136,23 @@ func main() {
 	}
 
 	repoIsGentooZhOfficial := repoName == gentooZhOfficialRepoName
+
+	// Reverse-dependency hint: bumping a depended-on package may require its
+	// consumers to be rebuilt, so surface them in the issue instead of only the
+	// version. Data comes from the deps-table relation.md (see --relation).
+	if relationFile != "" {
+		if deps := loadRevdeps(relationFile)[name]; len(deps) > 0 {
+			body += "\n\nReverse dependencies (a bump may need these rebuilt):\n"
+			const maxList = 20
+			for i, d := range deps {
+				if i == maxList {
+					body += fmt.Sprintf("- ... and %d more\n", len(deps)-maxList)
+					break
+				}
+				body += "- " + d + "\n"
+			}
+		}
+	}
 
 	// Append @github_account to body
 	// Only mention user on official gentoo-zh repo
