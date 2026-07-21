@@ -44,6 +44,27 @@ func readGithubAccount(tomlPath string, packagename string) interface{} {
 	}
 }
 
+// isAutobumpEnabled reports whether the package has `autobump = true` in overlay.toml. A package
+// turned off with a `# autobump off` comment has no `autobump` key, so it returns false. Any read
+// error returns false rather than aborting: the note is best-effort and must not block the issue.
+func isAutobumpEnabled(tomlPath string, packagename string) bool {
+	file, err := os.Open(tomlPath)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+
+	tree, err := toml.LoadReader(file)
+	if err != nil {
+		return false
+	}
+
+	if v, ok := tree.Get(packagename + ".autobump").(bool); ok {
+		return v
+	}
+	return false
+}
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
@@ -96,6 +117,11 @@ func main() {
 				body += "\nCC: " + v
 			}
 		}
+	}
+
+	// autobump handles opted-in packages, so tell the CC'd maintainer it is bumped automatically
+	if isAutobumpEnabled(tomlFile, name) {
+		body += "\n\n---\n**autobump** enabled · daily 19:00 (UTC+8)"
 	}
 
 	// init client
