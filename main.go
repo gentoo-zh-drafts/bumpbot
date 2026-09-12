@@ -146,29 +146,22 @@ func main() {
 	titlePrefix := "[nvchecker] " + name + " can be bump to "
 	title := titlePrefix + newver
 
-	query := fmt.Sprintf("repo:%s is:issue in:title %s", repoName, titlePrefix)
-	emptyIssue := Issue{}
-	currentIssue := searchIssueByTitle(client, githubv4.String(query))
-
-	if currentIssue != emptyIssue {
-		if currentIssue.Body == githubv4.String(body) && currentIssue.Title == githubv4.String(title) {
-			// If body and title match, do nothing
-			return
-		} else {
-			// If body or title do not match
-			if currentIssue.State == githubv4.IssueStateOpen {
-				// If the issue is open, update it
-				updateIssue(client, currentIssue, title, body, nvcheckerLabelId)
-				return
-			} else {
-				// If the issue is closed, create a new one
-				createissue(client, repoName, title, body, nvcheckerLabelId)
-			}
+	// An open issue for this package, whatever version it names, is updated in place.
+	openQuery := fmt.Sprintf("repo:%s is:issue is:open in:title %s", repoName, titlePrefix)
+	if issue := searchIssue(client, githubv4.String(openQuery), openIssueFor(titlePrefix)); issue != (Issue{}) {
+		if issue.Title != githubv4.String(title) || issue.Body != githubv4.String(body) {
+			updateIssue(client, issue, title, body, nvcheckerLabelId)
 		}
-	} else {
-		// If no matching issue is found, create a new one
-		createissue(client, repoName, title, body, nvcheckerLabelId)
+		return
 	}
+
+	// A closed issue with this exact title and body was closed on purpose; leave it.
+	closedQuery := fmt.Sprintf("repo:%s is:issue is:closed in:title %s", repoName, title)
+	if issue := searchIssue(client, githubv4.String(closedQuery), sameIssue(title, body)); issue != (Issue{}) {
+		return
+	}
+
+	createissue(client, repoName, title, body, nvcheckerLabelId)
 }
 func getRepositoryID(client *githubv4.Client, repoName string) githubv4.String {
 	var q struct {
@@ -250,34 +243,79 @@ func getLabelIdbyname(client *githubv4.Client, repoName string, labelName github
 	return ""
 }
 
-func searchIssueByTitle(client *githubv4.Client, query githubv4.String) Issue {
-
-	emptyIssue := Issue{}
-	var q struct {
-		Search struct {
-			Nodes []struct {
-				Issue `graphql:"... on Issue"`
-			}
-		} `graphql:"search(query: $query, type: ISSUE, first: 1)"`
+// openIssueFor matches the open issue of one package, whatever version it
+// names. GitHub search tokenizes on "-", so a query for "sys-apps/pnpm" also
+// returns "sys-apps/pnpm-bin" issues; only an exact title prefix counts.
+func openIssueFor(titlePrefix string) func(Issue) bool {
+	return func(i Issue) bool {
+		return i.State == githubv4.IssueStateOpen && strings.HasPrefix(string(i.Title), titlePrefix)
 	}
+}
 
-	err := client.Query(
-		context.Background(),
-		&q,
-		map[string]interface{}{"query": query},
-	)
-
-	if err != nil {
-		log.Fatalf("Failed to search issue: %v", err)
-		return emptyIssue
+// sameIssue matches an issue whose title and body are exactly what would be
+// created now; a closed one of those was closed on purpose.
+func sameIssue(title, body string) func(Issue) bool {
+	return func(i Issue) bool {
+		return i.Title == githubv4.String(title) && i.Body == githubv4.String(body)
 	}
+}
 
-	if len(q.Search.Nodes) == 1 {
-		for _, node := range q.Search.Nodes {
-			return node.Issue
+type issuePage struct {
+	issues []Issue
+	next   *githubv4.String
+}
+
+// searchIssue runs a GitHub issue search and returns the first result that
+// satisfies match. Results are ranked by relevance, not state, so every page
+// is read until a match turns up.
+func searchIssue(client *githubv4.Client, query githubv4.String, match func(Issue) bool) Issue {
+	return findIssue(func(after *githubv4.String) issuePage {
+		var q struct {
+			Search struct {
+				Nodes []struct {
+					Issue `graphql:"... on Issue"`
+				}
+				PageInfo struct {
+					HasNextPage githubv4.Boolean
+					EndCursor   githubv4.String
+				}
+			} `graphql:"search(query: $query, type: ISSUE, first: 100, after: $after)"`
 		}
+		err := client.Query(
+			context.Background(),
+			&q,
+			map[string]interface{}{"query": query, "after": after},
+		)
+		if err != nil {
+			log.Fatalf("Failed to search issue: %v", err)
+		}
+		page := issuePage{}
+		for _, node := range q.Search.Nodes {
+			page.issues = append(page.issues, node.Issue)
+		}
+		if q.Search.PageInfo.HasNextPage {
+			cursor := q.Search.PageInfo.EndCursor
+			page.next = &cursor
+		}
+		return page
+	}, match)
+}
+
+func findIssue(fetch func(after *githubv4.String) issuePage, match func(Issue) bool) Issue {
+	var after *githubv4.String
+	for page := 0; page < 10; page++ {
+		result := fetch(after)
+		for _, issue := range result.issues {
+			if match(issue) {
+				return issue
+			}
+		}
+		if result.next == nil {
+			return Issue{}
+		}
+		after = result.next
 	}
-	return emptyIssue
+	return Issue{}
 }
 
 func createissue(client *githubv4.Client, repoName string, title string, body string, labelId githubv4.ID) {
